@@ -42,6 +42,8 @@ typedef struct ghost_t {
 } ghost_t;
 
 Image map1 = {0, 0, NULL};
+Image map2 = {0, 0, NULL};
+Image map3 = {0, 0, NULL};
 Image *current_map = NULL;
 
 Image background_texture = {0, 0, NULL};
@@ -77,6 +79,8 @@ void gc_draw_map(void *memory, Image *image);
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrevInst, LPSTR args, int ncmdshow)
 {
     map1 = openImage("assets/maps/map#1.bmp");
+    map2 = openImage("assets/maps/map#2.bmp");
+    map3 = openImage("assets/maps/map#3.bmp");
 
     background_texture = openImage("assets/textures/background.bmp");
     wall_texture = openImage("assets/textures/wall.bmp");
@@ -90,9 +94,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrevInst, LPSTR args, int ncmdsho
     ghost3_texture = openImage("assets/textures/ghost_orange.bmp");
     ghost4_texture = openImage("assets/textures/ghost_red.bmp");
 
-    current_map = &map1;
+    current_map = &map3;
 
-    if(!map1.memory) return -1;
+    if(!current_map->memory) return -1;
 
     WNDCLASSW wc = {0};
     wc.hbrBackground = (HBRUSH)COLOR_WINDOW;
@@ -103,8 +107,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrevInst, LPSTR args, int ncmdsho
 
     if(!RegisterClassW(&wc)) return -1;
     
-    int32_t Width = map1.width * GRID_SIZE;
-    int32_t Height = map1.height * GRID_SIZE;
+    int32_t Width = current_map->width * GRID_SIZE;
+    int32_t Height = current_map->height * GRID_SIZE;
 
     RECT window_rect = {0};
     window_rect.right = Width;
@@ -176,11 +180,13 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrevInst, LPSTR args, int ncmdsho
 LRESULT CALLBACK WndProcedure(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch(msg) {
-        case WM_DESTROY:
+        case WM_DESTROY: {
             PostQuitMessage(0);
             break;
-        default:
+        }
+        default: {
             return DefWindowProcW(hWnd, msg, wp, lp);
+        }
     }
 }
 
