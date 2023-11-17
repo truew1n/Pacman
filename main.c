@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <windows.h>
+#include <time.h>
 
 #include "bmp.h"
 #include "vector.h"
@@ -13,7 +14,15 @@ int32_t ClientHeight;
 int32_t BitmapWidth;
 int32_t BitmapHeight;
 
+double delta_time = 0.0f;
+clock_t clock_start = 0;
+int32_t fps = 0;
+
+double fps_delta_sum = 0.0f;
+
 int8_t running = 1;
+
+#define size(array) (sizeof(array)/sizeof(array[0]))
 
 #define GRID_SIZE 40
 
@@ -35,11 +44,39 @@ int8_t running = 1;
 
 typedef uint32_t color_t;
 typedef int8_t type_t;
+typedef int8_t dir_t;
+
+#define NON_DIR -1
+#define EAST 0
+#define NORTH_EAST 1
+#define NORTH 2
+#define NORTH_WEST 3
+#define WEST 4
+#define SOUTH_WEST 5
+#define SOUTH 6
+#define SOUTH_EAST 7
+
+#define NON_TYPE -1
+#define GHOST_TYPE_0 0
+#define GHOST_TYPE_1 1
+#define GHOST_TYPE_2 2
+#define GHOST_TYPE_3 3
+#define DEFAULT_GHOST_TYPE GHOST_TYPE_1
+
+typedef struct player_t {
+    point_t location;
+    dir_t direction;
+    int32_t framecount;
+    int32_t max_framecount;
+} player_t;
 
 typedef struct ghost_t {
-    point_t point;
+    point_t location;
     type_t type;
 } ghost_t;
+
+#define DEFAULT_PLAYER {{0, 0}, EAST, 0, 0}
+#define DEFAULT_GHOST {{0, 0}, DEFAULT_GHOST_TYPE}
 
 Image map1 = {0, 0, NULL};
 Image map2 = {0, 0, NULL};
@@ -58,22 +95,27 @@ Image ghost2_texture = {0, 0, NULL};
 Image ghost3_texture = {0, 0, NULL};
 Image ghost4_texture = {0, 0, NULL};
 
+vector_t paths = EMPTY_VECTOR;
 vector_t walls = EMPTY_VECTOR;
 vector_t coins = EMPTY_VECTOR;
 vector_t foods = EMPTY_VECTOR;
 
-point_t pacman = ZERO_POINT;
+player_t pacman = DEFAULT_PLAYER;
+double pacman_delta_sum = 0.0f;
 
-ghost_t ghosts[4] = {0};
+ghost_t ghosts[4] = {DEFAULT_GHOST, DEFAULT_GHOST, DEFAULT_GHOST, DEFAULT_GHOST};
 
 LRESULT CALLBACK WndProcedure(HWND, UINT, WPARAM, LPARAM);
 int update(void *memory, HDC hdc, BITMAPINFO *bitmap_info);
+
+void load_map(Image *map_image);
 
 void gc_putpixel(void *memory, int32_t x, int32_t y, color_t color);
 void gc_fill_screen(void *memory, color_t color);
 void gc_fill_rectangle(void *memory, int32_t x, int32_t y, int32_t width, int32_t height, color_t color);
 void gc_draw_image(void *memory, int32_t x, int32_t y, Image *image);
-void gc_draw_map(void *memory, Image *image);
+void gc_draw_image_region(void *memory, int32_t x, int32_t y, Image *image, point_t region_start, point_t region_end);
+void gc_render(void *memory);
 
 
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrevInst, LPSTR args, int ncmdshow)
@@ -88,6 +130,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrevInst, LPSTR args, int ncmdsho
     food_texture = openImage("assets/textures/food.bmp");
 
     pacman_tilemap_texture = openImage("assets/textures/pacman_tilemap.bmp");
+    pacman.max_framecount = pacman_tilemap_texture.width / GRID_SIZE;
+    pacman.framecount = pacman.max_framecount;
 
     ghost1_texture = openImage("assets/textures/ghost_cyan.bmp");
     ghost2_texture = openImage("assets/textures/ghost_pink.bmp");
@@ -159,9 +203,11 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrevInst, LPSTR args, int ncmdsho
 
     // Draw once
     gc_draw_image(memory, 0, 0, &background_texture);
-    gc_draw_map(memory, current_map);
+    load_map(current_map);
+    gc_render(memory);
 
     while(running) {
+        clock_start = clock();
         MSG msg;
         while(PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
             if(msg.message == WM_QUIT) running = false;
@@ -170,8 +216,26 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrevInst, LPSTR args, int ncmdsho
         }
 
         // Draw Loop
+        {
+            fps_delta_sum += delta_time;
+            pacman_delta_sum += delta_time;
+            
+            if(fps_delta_sum >= 1.0f) {
+                printf("FPS: %i\n", fps);
+                fps_delta_sum = 0.0f;
+                fps = 0;
+            }
+            if(pacman_delta_sum >= 0.05f) {
+                int8_t state =  (--pacman.framecount < 0);
+                pacman.framecount = pacman.max_framecount * state + pacman.framecount * !state;
+                pacman_delta_sum = 0.0f;
+            }
 
-        update(memory, hdc, &bitmap_info);
+            gc_render(memory);
+            update(memory, hdc, &bitmap_info);
+        }
+        delta_time = ((double)(clock() - clock_start))/CLOCKS_PER_SEC;
+        fps++;
     }
 
     return 0;
@@ -201,6 +265,58 @@ int update(void *memory, HDC hdc, BITMAPINFO *bitmap_info)
         DIB_RGB_COLORS,
         SRCCOPY
     );
+}
+
+void load_map(Image *map_image)
+{
+    for(int32_t j = 0; j < map_image->height; ++j) {
+        for(int32_t i = 0; i <  map_image->width; ++i) {
+            color_t color = *((color_t *)  map_image->memory + (i + j *  map_image->width));
+            int32_t x_pos = i * GRID_SIZE;
+            int32_t y_pos = j * GRID_SIZE;
+            switch(color) {
+                case PATH: {
+                    vector_add(&paths, (point_t){x_pos, y_pos});
+                    break;
+                }
+                case WALL: {
+                    vector_add(&walls, (point_t){x_pos, y_pos});
+                    break;
+                }
+                case COIN: {
+                    vector_add(&coins, (point_t){x_pos, y_pos});
+                    break;
+                }
+                case FOOD: {
+                    vector_add(&foods, (point_t){x_pos, y_pos});
+                    break;
+                }
+                case GHOST1: {
+                    ghosts[0] = (ghost_t){(point_t){x_pos, y_pos}, 0};
+                    break;
+                }
+                case GHOST2: {
+                    ghosts[1] = (ghost_t){(point_t){x_pos, y_pos}, 1};
+                    break;
+                }
+                case GHOST3: {
+                    ghosts[2] = (ghost_t){(point_t){x_pos, y_pos}, 2};
+                    break;
+                }
+                case GHOST4: {
+                    ghosts[3] = (ghost_t){(point_t){x_pos, y_pos}, 3};
+                    break;
+                }
+                case PACMAN: {
+                    pacman.location = (point_t) {x_pos, y_pos};
+                    break;
+                }
+                default: {
+                    vector_add(&paths, (point_t){x_pos, y_pos});
+                }
+            }
+        }
+    }
 }
 
 void gc_putpixel(void *memory, int32_t x, int32_t y, color_t color)
@@ -245,54 +361,60 @@ void gc_draw_image(void *memory, int32_t x, int32_t y, Image *image)
     }
 }
 
-void gc_draw_map(void *memory, Image *image)
+void gc_draw_image_region(void *memory, int32_t x, int32_t y, Image *image, point_t region_start, point_t region_end)
 {
-    for(int32_t j = 0; j < image->height; ++j) {
-        for(int32_t i = 0; i < image->width; ++i) {
+    for(int32_t j = region_start.y; j < region_end.y; ++j) {
+        for(int32_t i = region_start.x; i < region_end.x; ++i) {
             color_t color = *((color_t *) image->memory + (i + j * image->width));
-            int32_t x_pos = i * GRID_SIZE;
-            int32_t y_pos = j * GRID_SIZE;
-            switch(color) {
-                case PATH: break;
-                case WALL: {
-                    gc_draw_image(memory, x_pos, y_pos, &wall_texture);
-                    vector_add(&walls, (point_t){x_pos, y_pos});
-                    break;
-                }
-                case COIN: {
-                    gc_draw_image(memory, x_pos, y_pos, &coin_texture);
-                    vector_add(&coins, (point_t){x_pos, y_pos});
-                    break;
-                }
-                case FOOD: {
-                    gc_draw_image(memory, x_pos, y_pos, &food_texture);
-                    vector_add(&foods, (point_t){x_pos, y_pos});
-                    break;
-                }
-                case GHOST1: {
-                    gc_draw_image(memory, x_pos, y_pos, &ghost1_texture);
-                    ghosts[0] = (ghost_t){(point_t){x_pos, y_pos}, 0};
-                    break;
-                }
-                case GHOST2: {
-                    gc_draw_image(memory, x_pos, y_pos, &ghost2_texture);
-                    ghosts[1] = (ghost_t){(point_t){x_pos, y_pos}, 1};
-                    break;
-                }
-                case GHOST3: {
-                    gc_draw_image(memory, x_pos, y_pos, &ghost3_texture);
-                    ghosts[2] = (ghost_t){(point_t){x_pos, y_pos}, 2};
-                    break;
-                }
-                case GHOST4: {
-                    gc_draw_image(memory, x_pos, y_pos, &ghost4_texture);
-                    ghosts[3] = (ghost_t){(point_t){x_pos, y_pos}, 3};
-                    break;
-                }
-                default: {
-                    gc_fill_rectangle(memory, x_pos, y_pos, GRID_SIZE, GRID_SIZE, color);
-                }
+            if(((color >> 24) & 0xFF) == 0xFF)
+                gc_putpixel(memory, x + (i - region_start.x), y + (j - region_start.y), color);
+        }
+    }
+}
+
+void gc_render(void *memory)
+{
+    // Just take samples of background texture when there are transparent pixels
+    gc_draw_image(memory, 0, 0, &background_texture);
+    point_t loc = {0, 0};
+    for(int32_t i = 0; i < walls.size; ++i) {
+        loc = vector_get(&walls, i);
+        gc_draw_image(memory, loc.x, loc.y, &wall_texture);
+        
+    }
+    for(int32_t i = 0; i < coins.size; ++i) {
+        loc = vector_get(&coins, i);
+        gc_draw_image(memory, loc.x, loc.y, &coin_texture);
+    }
+    for(int32_t i = 0; i < foods.size; ++i) {
+        loc = vector_get(&foods, i);
+        gc_draw_image(memory, loc.x, loc.y, &food_texture);
+    }
+    gc_draw_image_region(
+        memory, pacman.location.x, pacman.location.y, &pacman_tilemap_texture,
+        (point_t){pacman.framecount * GRID_SIZE, pacman.direction * GRID_SIZE},
+        (point_t){(pacman.framecount + 1) * GRID_SIZE, (pacman.direction + 1) * GRID_SIZE}
+    );
+    for(int i = 0; i < size(ghosts); ++i) {
+        Image *end_ghost_texture = NULL;
+        switch(ghosts[i].type) {
+            case GHOST_TYPE_0: {
+                end_ghost_texture = &ghost1_texture;
+                break;
+            }
+            case GHOST_TYPE_1: {
+                end_ghost_texture = &ghost2_texture;
+                break;
+            }
+            case GHOST_TYPE_2: {
+                end_ghost_texture = &ghost3_texture;
+                break;
+            }
+            case GHOST_TYPE_3: {
+                end_ghost_texture = &ghost4_texture;
+                break;
             }
         }
+        gc_draw_image(memory, ghosts[i].location.x, ghosts[i].location.y, end_ghost_texture);
     }
 }
