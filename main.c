@@ -363,19 +363,26 @@ void gc_draw_image(void *memory, int32_t x, int32_t y, Image *image)
 
 void gc_draw_image_region(void *memory, int32_t x, int32_t y, Image *image, point_t region_start, point_t region_end)
 {
+    point_t sample = {0, 0};
+    color_t color = 0xFF000000;
     for(int32_t j = region_start.y; j < region_end.y; ++j) {
         for(int32_t i = region_start.x; i < region_end.x; ++i) {
-            color_t color = *((color_t *) image->memory + (i + j * image->width));
-            if(((color >> 24) & 0xFF) == 0xFF)
-                gc_putpixel(memory, x + (i - region_start.x), y + (j - region_start.y), color);
+            color = *((color_t *) image->memory + (i + j * image->width));
+            sample.x = x + (i - region_start.x);
+            sample.y = y + (j - region_start.y);
+            if(((color >> 24) & 0xFF) == 0xFF) {
+                gc_putpixel(memory, sample.x, sample.y, color);
+            } else {
+                color = *((color_t *) background_texture.memory + (sample.x + sample.y * background_texture.width));
+                gc_putpixel(memory, sample.x, sample.y, color);
+            }
+            
         }
     }
 }
 
 void gc_render(void *memory)
 {
-    // Just take samples of background texture when there are transparent pixels
-    gc_draw_image(memory, 0, 0, &background_texture);
     point_t loc = {0, 0};
     for(int32_t i = 0; i < walls.size; ++i) {
         loc = vector_get(&walls, i);
